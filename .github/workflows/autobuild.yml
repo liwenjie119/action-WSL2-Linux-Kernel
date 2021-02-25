@@ -1,0 +1,102 @@
+#=================================================
+# https://github.com/liwenjie119/WSL2-Linux-Kernel
+# Description: Build kernel for WSL2 using GitHub Actions
+# Lisence: MIT
+# Author: liwenjie119
+#=================================================
+
+name: Auto build kernel for wsl2
+
+on:
+  push:
+    branches: 
+      - master
+  watch:
+    types: started
+
+env:
+  UPLOAD_FIRMWARE: true
+  UPLOAD_COWTRANSFER: true
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -qq install g++ make flex bison libssl-dev libelf-dev bc git-lfs
+        sudo timedatectl set-timezone "$TZ"
+    - name: clone WSL2-Linux-Kernel
+      run: |
+        git clone --depth=1 https://github.com/xieyubo/WSL2-Linux-Kernel
+    - name: make menuconfig and make
+      run: |
+        cd WSL2-Linux-Kernel
+        sed -i '25c CONFIG_LOCALVERSION="-microsoft-wsl2-lwj-port"' Microsoft/config-wsl
+        sed -i '26c CONFIG_LOCALVERSION_AUTO=y' Microsoft/config-wsl
+        sed -i '2577c CONFIG_MINIX_FS=y' Microsoft/config-wsl
+        make -j$(nproc) KCONFIG_CONFIG=Microsoft/config-wsl
+        mkdir output
+        cp arch/x86/boot/bzImage output/kernel
+    - name: Organize files
+      id: organize
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      run: |
+        cd WSL2-Linux-Kernel/output
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "::set-output name=status::success"
+    - name: Upload firmware directory
+      uses: actions/upload-artifact@main
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: kernel${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
+
+    - name: Upload firmware to cowtransfer
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_COWTRANSFER == 'true' && !cancelled()
+      run: |
+        curl -sL https://git.io/file-transfer | bash -s beta
+        ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
+        echo "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)"
+  push:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@master
+    
+    - name: Clean
+      run: |
+             git config --global user.email "actions@github.com"
+             git config --global user.name "GitHub Actions"
+             git filter-branch --force --index-filter 'git rm --cached --ignore-unmatch kernel' --prune-empty --tag-name-filter cat -- --all
+             git push  -f
+    
+    - name: Download kernel
+      uses: actions/download-artifact@master
+      with:
+        name: kernel
+        path: ./
+    
+    - name: Commit
+      run: |
+        git config --global user.email "actions@github.com"
+        git config --global user.name "GitHub Actions"
+        git add kernel
+        git commit -am "update kernel"
+        git push origin master --force
+        
+    - name: Delete workflow runs
+      uses: GitRML/delete-workflow-runs@main
+      with:
+        retain_days: 1
+        keep_minimum_runs: 3

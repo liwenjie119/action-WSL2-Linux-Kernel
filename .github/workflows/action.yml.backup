@@ -1,0 +1,61 @@
+#=================================================
+# https://github.com/liwenjie119/WSL2-Linux-Kerne
+# Description: Build kernel for WSL2 using GitHub Actions
+# Lisence: MIT
+# Author: liwenjie119
+#=================================================
+
+name: Auto build kernel for wsl2
+
+on:
+  watch:
+    types: started
+
+env:
+  UPLOAD_FIRMWARE: true
+  UPLOAD_COWTRANSFER: true
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@master
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -qq install g++ make flex bison libssl-dev libelf-dev bc
+        sudo timedatectl set-timezone "$TZ"
+    - name: make menuconfig and make
+      run: |
+        sed -i '25c CONFIG_LOCALVERSION="-microsoft-wsl2-lwj-port"' Microsoft/config-wsl
+        sed -i '26c CONFIG_LOCALVERSION_AUTO=y' Microsoft/config-wsl
+        sed -i '2577c CONFIG_MINIX_FS=y' Microsoft/config-wsl
+        make -j$(nproc) KCONFIG_CONFIG=Microsoft/config-wsl
+        mkdir output
+        cp arch/x86/boot/bzImage output/kernel
+    - name: Organize files
+      id: organize
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      run: |
+        cd output
+        echo "::set-env name=FIRMWARE::$PWD"
+        echo "::set-output name=status::success"
+    - name: Upload firmware directory
+      uses: actions/upload-artifact@master
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
+
+    - name: Upload firmware to cowtransfer
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_COWTRANSFER == 'true' && !cancelled()
+      run: |
+        curl -fsSL git.io/file-transfer | sh
+        ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
+        echo "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)"
